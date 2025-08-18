@@ -15,6 +15,7 @@ const {
   shell,
 } = require("electron");
 const path = require("path");
+const { pathToFileURL } = require("url"); // ✅ 生成合法 file:/// URL
 const server = require("http").createServer();
 const helper = require("./src/helper");
 const printSetup = require("./src/print");
@@ -32,6 +33,14 @@ const {
 
 const TaskRunner = require("concurrent-tasks");
 
+// ✅ 防白屏/兼容：即便 disabledGpu 未打开，也尽量规避驱动/安全软件导致的白屏
+try {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("ignore-gpu-blocklist");
+  app.commandLine.appendSwitch("disable-features", "RendererCodeIntegrity");
+} catch (_) {}
+
+// 兼容你原有的开关
 if (store.get("disabledGpu")) {
   app.commandLine.appendSwitch("disable-gpu");
 }
@@ -119,6 +128,23 @@ async function initialize() {
     }
   });
 
+  // ✅ 渲染层同步读取/写入配置的 IPC 桥（修复 sendSync 无监听导致卡死）
+  ipcMain.on("electron-store-get-data", (event, key, defaultValue) => {
+    try {
+      event.returnValue = store.get(key, defaultValue);
+    } catch (e) {
+      event.returnValue = defaultValue;
+    }
+  });
+  ipcMain.on("electron-store-set-data", (event, key, value) => {
+    try {
+      store.set(key, value);
+      event.returnValue = true;
+    } catch (e) {
+      event.returnValue = false;
+    }
+  });
+
   // 允许渲染进程创建通知
   ipcMain.on("notification", (event, data) => {
     const notification = new Notification(data);
@@ -171,6 +197,7 @@ async function createWindow() {
     center: true, // 居中
     resizable: false, // 禁止窗口缩放
     show: store.get("openAsHidden") ? false : true, // 显示
+    backgroundColor: "#FFFFFF", // ✅ 背景色兜底，避免闪白
     webPreferences: {
       // 设置此项为false后，才可在渲染进程中使用 electron api
       contextIsolation: false,
@@ -197,9 +224,20 @@ async function createWindow() {
   // 初始化系统设置
   systemSetup();
 
-  // 加载主页面
-  const indexHtml = path.join("file://", app.getAppPath(), "assets/index.html");
+  // 加载主页面（✅ 使用合法 file:/// URL）
+  const indexHtml = pathToFileURL(
+    path.join(app.getAppPath(), "assets/index.html"),
+  ).toString();
   MAIN_WINDOW.webContents.loadURL(indexHtml);
+
+  // ✅ 捕获加载失败，打印原因并给出兜底页（便于排查）
+  MAIN_WINDOW.webContents.on("did-fail-load", (e, code, desc, url) => {
+    console.error("did-fail-load:", code, desc, url);
+    const fallback =
+      "data:text/html;charset=utf-8," +
+      encodeURIComponent(`加载失败：${desc}<br/>URL：${url || indexHtml}`);
+    MAIN_WINDOW.loadURL(fallback);
+  });
 
   // 退出
   MAIN_WINDOW.on("closed", () => {
@@ -284,16 +322,17 @@ function loadingView(windowOptions) {
     height: windowOptions.height,
   });
 
-  const loadingHtml = path.join(
-    "file://",
-    app.getAppPath(),
-    "assets/loading.html",
-  );
+  // ✅ 使用合法 file:/// URL
+  const loadingHtml = pathToFileURL(
+    path.join(app.getAppPath(), "assets/loading.html"),
+  ).toString();
   loadingBrowserView.webContents.loadURL(loadingHtml);
 
   // 主窗口 dom 加载完毕，移除 loadingBrowserView
   MAIN_WINDOW.webContents.on("dom-ready", async (event) => {
-    MAIN_WINDOW.removeBrowserView(loadingBrowserView);
+    try {
+      MAIN_WINDOW.removeBrowserView(loadingBrowserView);
+    } catch (_) {}
   });
 }
 
@@ -401,3 +440,4 @@ async function openSetWindow() {
 
 // 初始化主窗口
 initialize();
+
