@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>仓库打单 · electron-hiprint 控制面板（增强版）</title>
+  <!-- TailwindCSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- socket.io 客户端 -->
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <style>
+    /* 让预览 iframe 背景更像纸张 */
+    .paper-shadow { box-shadow: 0 10px 30px rgba(0,0,0,.12); }
+    /* 代码区滚动优化 */
+    textarea { tab-size: 2; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+  <div class="max-w-7xl mx-auto p-6">
+    <header class="mb-5 flex items-start gap-4 justify-between">
+      <div>
+        <h1 class="text-2xl font-bold leading-tight">仓库打单（electron-hiprint） · 控制面板</h1>
+        <p class="text-sm text-gray-500">支持 PDF / HTML 静默打印 · 纸张尺寸可配置（单位：mm，发送时自动换算为千分之一毫米）</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="helpBtn" class="text-sm px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50">帮助</button>
+      </div>
+    </header>
+
+    <!-- 顶部状态条 -->
+    <section class="mb-4 rounded-2xl border bg-white p-4 flex flex-wrap items-center gap-4">
+      <div class="flex items-center gap-3">
+        <div id="statusDot" class="h-3 w-3 rounded-full bg-red-400"></div>
+        <div class="text-sm">连接：<span id="statusText" class="font-medium text-red-600">未连接</span></div>
+        <div class="text-xs text-gray-500">目标：<code>http://localhost:17521</code></div>
+      </div>
+
+      <div class="flex items-center gap-2 ml-auto">
+        <label class="text-sm text-gray-600">Token（可选）</label>
+        <input id="tokenInput" type="text" placeholder="如客户端设置了 token" class="border rounded-lg px-2 py-1 text-sm w-56" />
+        <button id="reconnectBtn" class="text-sm px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50">重连</button>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <label class="text-sm text-gray-600">打印机</label>
+        <select id="printerSel" class="text-sm border rounded-lg px-2 py-1 min-w-[220px]">
+          <option value="">（默认打印机）</option>
+        </select>
+        <button id="refreshPrinters" class="text-sm px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50">刷新</button>
+        <button id="savePrefs" class="text-sm px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50">保存设置</button>
+      </div>
+    </section>
+
+    <!-- 纸张设置 & 预设 -->
+    <section class="mb-6 rounded-2xl border bg-white p-4">
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div>
+          <label class="block text-sm text-gray-600 mb-1">纸张宽度（mm）</label>
+          <input id="wMm" type="number" value="100" step="1" class="w-full border rounded-lg px-3 py-2" />
+        </div>
+        <div>
+          <label class="block text-sm text-gray-600 mb-1">纸张高度（mm）</label>
+          <input id="hMm" type="number" value="150" step="1" class="w-full border rounded-lg px-3 py-2" />
+        </div>
+        <div>
+          <label class="block text-sm text-gray-600 mb-1">方向</label>
+          <select id="orientation" class="w-full border rounded-lg px-3 py-2">
+            <option value="portrait" selected>竖向（短边×长边）</option>
+            <option value="landscape">横向（长边×短边）</option>
+          </select>
+        </div>
+      </div>
+      <div class="mt-3 flex flex-wrap items-center gap-2 text-sm">
+        <span class="text-gray-500">预设：</span>
+        <button class="px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50" data-preset="100x150">100×150 mm（4×6" 面单）</button>
+        <button class="px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50" data-preset="100x50">100×50 mm</button>
+        <button class="px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50" data-preset="100x100">100×100 mm</button>
+        <button class="px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50" data-preset="30x70">30×70 mm</button>
+
+        <button class="px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50" data-preset="80x60">10×50 mm（标签）</button>
+        <span class="text-xs text-gray-400">* PDF 模式以 PDF 自身尺寸为主；HTML 模式可严格生效</span>
+      </div>
+    </section>
+
+    <!-- 主体：PDF / HTML / 校准 / 批量打印 -->
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+      <!-- PDF 模式 -->
+      <section class="rounded-2xl border bg-white p-5 shadow-sm">
+        <h2 class="text-lg font-semibold mb-3">PDF 模式</h2>
+        <p class="text-sm text-gray-500 mb-4">粘贴 PDF 链接（HTTP/HTTPS）或本机路径（如 <code>C:\\labels\\1.pdf</code>）。</p>
+        <div class="space-y-3">
+          <input id="pdfUrl" type="text" placeholder="https://example.com/waybill.pdf 或 C:\\path\\to\\file.pdf" class="w-full border rounded-xl px-4 py-3" />
+          <div class="flex items-center gap-3 flex-wrap">
+            <button id="printPdfBtn" class="px-4 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 active:scale-[0.99]">打印 PDF</button>
+            <label class="inline-flex items-center gap-2 text-sm text-gray-600"><input id="isLocalPdf" type="checkbox" /> 本机路径</label>
+            <span class="text-xs text-gray-400">使用 <code>type:"url_pdf"</code>（链接）或 <code>type:"pdf"</code>（本机路径）</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- HTML 模式 -->
+      <section class="rounded-2xl border bg-white p-5 shadow-sm">
+        <h2 class="text-lg font-semibold mb-3">HTML 模式</h2>
+        <p class="text-sm text-gray-500 mb-4">点击“编辑/预览”弹窗，修改模板后直接测试打印；支持变量渲染。</p>
+        <div class="flex items-center gap-3 flex-wrap">
+          <button id="openHtmlModal" class="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 active:scale-[0.99]">编辑/预览</button>
+          <button id="printHtmlBtn" class="px-4 py-2 rounded-xl bg-gray-900 text-white hover:bg-black active:scale-[0.99]">打印 HTML</button>
+          <button id="resetTplBtn" class="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50">恢复默认模板</button>
+        </div>
+        <!-- 变量渲染区 -->
+        <div class="mt-4 border rounded-xl p-3">
+          <div class="flex items-center justify-between">
+            <h3 class="font-medium">变量表单 → 渲染 HTML（可选）</h3>
+            <button id="applyVarsBtn" class="text-sm px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50">填充到模板</button>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
+            <input id="v_name"     class="border rounded-lg px-3 py-2" placeholder="{{receiver_name}} 收件人" />
+            <input id="v_phone"    class="border rounded-lg px-3 py-2" placeholder="{{receiver_phone}} 电话" />
+            <input id="v_address"  class="border rounded-lg px-3 py-2" placeholder="{{receiver_address}} 地址" />
+            <input id="v_order"    class="border rounded-lg px-3 py-2" placeholder="{{order_no}} 订单号" />
+            <input id="v_track"    class="border rounded-lg px-3 py-2" placeholder="{{tracking_number}} 面单号" />
+            <input id="v_sku"      class="border rounded-lg px-3 py-2" placeholder="{{sku_name}} SKU" />
+            <input id="v_qty"      type="number" class="border rounded-lg px-3 py-2" placeholder="{{qty}} 数量" />
+            <input id="v_bin"      class="border rounded-lg px-3 py-2" placeholder="{{bin_code}} 货位" />
+            <input id="v_qr"       class="border rounded-lg px-3 py-2" placeholder="{{qr_payload}} 二维码内容" />
+          </div>
+          <p class="text-xs text-gray-500 mt-2">模板占位格式：<code>{{变量名}}</code>；点击“填充到模板”会用上面表单的值替换同名占位。</p>
+        </div>
+      </section>
+
+      <!-- 校准工具 -->
+      <section class="rounded-2xl border bg-white p-5 shadow-sm">
+        <h2 class="text-lg font-semibold mb-3">校准 / 测试</h2>
+        <p class="text-sm text-gray-500 mb-4">打印网格页检查尺寸与位移，或打印一张包含大小文本/线条的测试页。</p>
+        <div class="flex items-center gap-3 flex-wrap">
+          <button id="printGridBtn" class="px-4 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700">打印网格（HTML）</button>
+          <button id="printTestPageBtn" class="px-4 py-2 rounded-xl bg-violet-600 text-white hover:bg-violet-700">打印测试页（HTML）</button>
+        </div>
+        <p class="text-xs text-gray-500 mt-3">若偏移：可在打印机驱动中关闭缩放/边距，或在模板中微调外边距；必要时在 Windows 打印服务器属性中创建自定义纸型。</p>
+      </section>
+
+      <!-- 批量打印（HTML） -->
+      <section class="rounded-2xl border bg-white p-5 shadow-sm">
+        <h2 class="text-lg font-semibold mb-3">批量打印（HTML）</h2>
+        <p class="text-sm text-gray-500 mb-2">每行一条 JSON，按模板占位渲染后依次发送打印请求。</p>
+        <textarea id="batchJson" class="w-full h-48 border rounded-lg p-3 text-xs" placeholder='例如：\n{"receiver_name":"张三","receiver_phone":"13800000000","receiver_address":"上海市浦东新区","order_no":"K001","tracking_number":"YT123","sku_name":"帽子","qty":1,"bin_code":"A-01","qr_payload":"K001"}\n{"receiver_name":"李四", ... }'></textarea>
+        <div class="mt-3 flex items-center gap-3">
+          <button id="batchPrintBtn" class="px-4 py-2 rounded-xl bg-gray-900 text-white hover:bg-black">开始批量打印</button>
+          <span id="batchStatus" class="text-xs text-gray-500"></span>
+        </div>
+      </section>
+    </div>
+
+    <!-- 简易日志 -->
+    <section class="mt-6 rounded-2xl border bg-white p-4">
+      <div class="flex items-center justify-between">
+        <h2 class="text-lg font-semibold">任务日志</h2>
+        <button id="clearLog" class="text-sm px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50">清空</button>
+      </div>
+      <div id="log" class="mt-3 text-sm max-h-64 overflow-auto whitespace-pre-wrap"></div>
+    </section>
+  </div>
+
+  <!-- HTML 编辑弹窗 -->
+  <div id="modal" class="fixed inset-0 z-50 hidden">
+    <div class="absolute inset-0 bg-black/50"></div>
+    <div class="relative max-w-6xl mx-auto mt-10 bg-white rounded-2xl shadow-xl border">
+      <div class="flex items-center justify-between p-4 border-b">
+        <h3 class="font-semibold">编辑 HTML（按 mm 尺寸预设）</h3>
+        <div class="flex items-center gap-2">
+          <button id="applyPreview" class="px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50">更新预览</button>
+          <button id="modalPrint" class="px-3 py-1.5 rounded-lg bg-gray-900 text-white hover:bg-black">打印 HTML</button>
+          <button id="closeModal" class="px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50">关闭</button>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-0">
+        <!-- 编辑区 -->
+        <div class="p-4 border-r">
+          <label class="block text-xs text-gray-500 mb-2">HTML 源码</label>
+          <textarea id="htmlSource" class="w-full h-[560px] border rounded-lg p-3 text-xs leading-5"></textarea>
+        </div>
+        <!-- 预览区 -->
+        <div class="p-4">
+          <label class="block text-xs text-gray-500 mb-2">预览</label>
+          <div class="border rounded-lg p-3 bg-gray-50">
+            <iframe id="preview" class="w-full h-[560px] bg-white rounded-lg border paper-shadow"></iframe>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 帮助弹窗 -->
+  <div id="helpModal" class="fixed inset-0 z-50 hidden">
+    <div class="absolute inset-0 bg-black/50"></div>
+    <div class="relative max-w-3xl mx-auto mt-16 bg-white rounded-2xl shadow-xl border p-6">
+      <div class="flex items-start justify-between mb-3">
+        <h3 class="text-lg font-semibold">使用说明</h3>
+        <button id="closeHelp" class="px-3 py-1.5 rounded-lg border bg-white hover:bg-gray-50">关闭</button>
+      </div>
+      <ol class="list-decimal pl-6 space-y-2 text-sm text-gray-700">
+        <li>先启动 <b>electron-hiprint</b> 客户端（Windows 托盘可见）。如设置了 token，请在本页右上角填入并“重连”。</li>
+        <li>“打印机”下拉中选择目标打印机；可“保存设置”，下次自动恢复。</li>
+        <li>纸张尺寸填 mm（默认 100×150）；HTML 模式会按该尺寸渲染并打印。</li>
+        <li>PDF 模式：链接用 <code>type:"url_pdf"</code>，本机路径用 <code>type:"pdf"</code>。</li>
+        <li>若打印偏移或被缩放：在打印机驱动中选正确纸型，关闭缩放/边距；必要时在“打印服务器属性”中创建自定义纸型。</li>
+        <li>批量打印：每行一条 JSON，按模板占位 <code>{{name}}</code> 替换。</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="fixed top-4 right-4 hidden">
+    <div id="toastInner" class="rounded-xl border bg-white px-4 py-3 shadow-lg text-sm"></div>
+  </div>
+
+  <script>
+    // ====== 工具：toast / log / storage ======
+    function showToast(msg, type="info"){ const box = document.getElementById("toast"); const inner = document.getElementById("toastInner"); const color = type==="ok"?"border-green-600 text-green-700": type==="err"?"border-red-600 text-red-700":"border-gray-600 text-gray-700"; inner.className = `rounded-xl border bg-white px-4 py-3 shadow-lg text-sm ${color}`; inner.textContent = msg; box.classList.remove("hidden"); setTimeout(()=> box.classList.add("hidden"), 2500); }
+    const logBox = document.getElementById('log');
+    function logLine(text){ const time = new Date().toLocaleTimeString(); logBox.textContent += `[${time}] ${text}\n`; logBox.scrollTop = logBox.scrollHeight; }
+    const store = {
+      get(){ try{ return JSON.parse(localStorage.getItem('hiprint_prefs')||'{}'); }catch(e){return {}} },
+      set(obj){ localStorage.setItem('hiprint_prefs', JSON.stringify(obj||{})); }
+    }
+
+    // ====== 连接 electron-hiprint ======
+    let socket = null; let connected = false;
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const tokenInput = document.getElementById('tokenInput');
+    const reconnectBtn = document.getElementById('reconnectBtn');
+    const printerSel = document.getElementById('printerSel');
+    const refreshPrinters = document.getElementById('refreshPrinters');
+    const savePrefsBtn = document.getElementById('savePrefs');
+
+    function setConnState(ok){ connected = ok; statusDot.className = `h-3 w-3 rounded-full ${ok? 'bg-emerald-500':'bg-red-400'}`; statusText.textContent = ok ? '已连接' : '未连接'; statusText.className = ok? 'font-medium text-emerald-700':'font-medium text-red-600'; }
+
+    function connectSocket(){
+      if(socket){ try{ socket.disconnect(); }catch(e){} }
+      const authToken = tokenInput.value.trim();
+      const opts = { transports:["websocket"] };
+      if(authToken) opts.auth = { token: authToken };
+      socket = io("http://localhost:17521", opts);
+      socket.on("connect", ()=>{ setConnState(true); logLine("连接成功"); socket.emit("getClientInfo"); socket.emit("refreshPrinterList"); });
+      socket.on("disconnect", ()=>{ setConnState(false); logLine("连接断开"); });
+      socket.on("clientInfo", (info)=>{ logLine("clientInfo: "+ JSON.stringify(info)); });
+      socket.on("printerList", (list)=>{
+        logLine("printerList: "+ JSON.stringify(list));
+        const cur = printerSel.value; printerSel.innerHTML = `<option value="">（默认打印机）</option>`;
+        (list||[]).forEach(p=>{ const name = p?.name || p; if(!name) return; const opt = document.createElement('option'); opt.value = name; opt.textContent = name; printerSel.appendChild(opt); });
+        // 恢复上次选择
+        const prefs = store.get(); const remembered = prefs.printer || cur; if(remembered){ [...printerSel.options].forEach(o=> o.value===remembered && (o.selected=true)); }
+      });
+      socket.on("success", (res)=>{ logLine("✅ 打印成功: "+ JSON.stringify(res)); showToast("打印成功","ok"); });
+      socket.on("error", (err)=>{ logLine("❌ 打印失败: "+ JSON.stringify(err)); showToast("打印失败："+(err?.message || JSON.stringify(err)), "err"); });
+    }
+
+    reconnectBtn.addEventListener('click', ()=>{ connectSocket(); persistPrefs(); });
+    refreshPrinters.addEventListener('click', ()=> socket?.emit("refreshPrinterList"));
+    savePrefsBtn.addEventListener('click', ()=>{ persistPrefs(); showToast('设置已保存','ok'); });
+
+    // ====== 纸张工具与预设 ======
+    const wMm = document.getElementById('wMm');
+    const hMm = document.getElementById('hMm');
+    const orientation = document.getElementById('orientation');
+    function mmToThou(mm){ return Math.round(parseFloat(mm||0)*1000); }
+    function getPageSize(){
+      const W = parseFloat(wMm.value||0); const H = parseFloat(hMm.value||0); const ori = orientation.value;
+      const widthMm  = ori==='landscape' ? Math.max(W,H) : Math.min(W,H);
+      const heightMm = ori==='landscape' ? Math.min(W,H) : Math.max(W,H);
+      return { width: mmToThou(widthMm), height: mmToThou(heightMm) };
+    }
+    document.querySelectorAll('[data-preset]').forEach(btn=> btn.addEventListener('click', ()=>{
+      const v = btn.getAttribute('data-preset');
+      const [pw, ph] = v.split('x').map(Number);
+      wMm.value = pw; hMm.value = ph; orientation.value = 'portrait';
+      showToast(`已应用预设：${pw}×${ph}mm`, 'ok');
+      persistPrefs();
+    }));
+
+    // ====== PDF 打印 ======
+    const pdfUrl = document.getElementById('pdfUrl');
+    const isLocalPdf = document.getElementById('isLocalPdf');
+    document.getElementById('printPdfBtn').addEventListener('click', ()=>{
+      const val = (pdfUrl.value||'').trim(); if(!val){ showToast('请先输入 PDF 链接或本机路径','err'); return; }
+      const printer = printerSel.value; const templateId = 'pdf-'+Date.now();
+      if(isLocalPdf.checked){
+        socket.emit('news', { type:'pdf', pdf_path: val, printer, templateId });
+        logLine(`发送任务(pdf:local): ${val}`);
+      }else{
+        socket.emit('news', { type:'url_pdf', pdf_path: val, printer, templateId });
+        logLine(`发送任务(pdf:url): ${val}`);
+      }
+      showToast('已发送打印任务（PDF）');
+      persistPrefs();
+    });
+
+    // ====== HTML 模式（弹窗、模板、预览、打印） ======
+    const modal = document.getElementById('modal');
+    const openHtmlModal = document.getElementById('openHtmlModal');
+    const closeModal = document.getElementById('closeModal');
+    const applyPreviewBtn = document.getElementById('applyPreview');
+    const modalPrintBtn = document.getElementById('modalPrint');
+    const printHtmlBtn = document.getElementById('printHtmlBtn');
+    const resetTplBtn = document.getElementById('resetTplBtn');
+    const htmlSource = document.getElementById('htmlSource');
+    const preview = document.getElementById('preview');
+
+    const defaultHtml = (`
+<div style="width:100mm;height:150mm;box-sizing:border-box;padding:6mm;font-family:Arial,Helvetica,sans-serif;position:relative;">
+  <h2 style="margin:0 0 4mm 0;">收件人：{{receiver_name}} <small style="font-weight:normal;color:#555;">{{receiver_phone}}</small></h2>
+  <div>地址：{{receiver_address}}</div>
+  <hr style="margin:6mm 0;"/>
+  <div>订单：{{order_no}}</div>
+  <div>面单号：{{tracking_number}}</div>
+  <div style="margin-top:10mm;border:1px dashed #000;padding:3mm;">这里可以放条码 / 二维码图片（img/svg），或占位文本：{{qr_payload}}</div>
+  <div style="position:absolute;right:6mm;bottom:6mm;font-size:10px;color:#888;">{{sku_name}} × {{qty}} · 货位 {{bin_code}}</div>
+</div>
+    `).trim();
+
+    function openModal(){ if(!htmlSource.value) { htmlSource.value = (store.get().tpl || defaultHtml); } updatePreview(); modal.classList.remove('hidden'); }
+    function hideModal(){ modal.classList.add('hidden'); }
+    function updatePreview(){ const doc = preview.contentDocument || preview.contentWindow.document; doc.open(); doc.write(`<!doctype html><html><head><meta charset='utf-8'><style>html,body{margin:0;padding:0;background:#fff;}</style></head><body>${htmlSource.value}</body></html>`); doc.close(); }
+    function printHtml(){ const html = htmlSource.value.trim() || defaultHtml; const pageSize = getPageSize(); const printer = printerSel.value; const templateId = 'html-'+Date.now(); socket.emit('news',{ type:'html', html, pageSize, printer, templateId }); logLine('发送任务(html)'); showToast('已发送打印任务（HTML）'); persistPrefs(); }
+
+    openHtmlModal.addEventListener('click', openModal);
+    closeModal.addEventListener('click', hideModal);
+    applyPreviewBtn.addEventListener('click', updatePreview);
+    modalPrintBtn.addEventListener('click', printHtml);
+    printHtmlBtn.addEventListener('click', ()=>{ if(!htmlSource.value) htmlSource.value = (store.get().tpl || defaultHtml); printHtml(); });
+    resetTplBtn.addEventListener('click', ()=>{ htmlSource.value = defaultHtml; updatePreview(); showToast('已恢复默认模板','ok'); });
+
+    // ====== 变量渲染（把表单值替换进模板） ======
+    const varsBtn = document.getElementById('applyVarsBtn');
+    const V = id => document.getElementById(id).value;
+    function renderTemplate(tpl, data){ return tpl.replace(/{{\s*(\w+)\s*}}/g, (_,k)=> (data[k] ?? '')); }
+    varsBtn.addEventListener('click', ()=>{
+      const data = {
+        receiver_name: V('v_name'), receiver_phone: V('v_phone'), receiver_address: V('v_address'),
+        order_no: V('v_order'), tracking_number: V('v_track'), sku_name: V('v_sku'), qty: V('v_qty'), bin_code: V('v_bin'), qr_payload: V('v_qr')
+      };
+      const src = (htmlSource.value || defaultHtml);
+      htmlSource.value = renderTemplate(src, data);
+      updatePreview();
+      showToast('已填充变量到模板','ok');
+      persistPrefs();
+    });
+
+    // ====== 校准：网格 & 测试页（HTML） ======
+    function buildGridHtml(){
+      const {width, height} = getPageSize();
+      const mmW = (width/1000).toFixed(1), mmH = (height/1000).toFixed(1);
+      // 使用 mm 为单位并绘制 10mm 粗线、5mm 细线
+      return `
+<div style="width:${mmW}mm;height:${mmH}mm;box-sizing:border-box;position:relative;background:
+  repeating-linear-gradient(0deg, #e5e7eb, #e5e7eb 1px, transparent 1px, transparent 5mm),
+  repeating-linear-gradient(90deg, #e5e7eb, #e5e7eb 1px, transparent 1px, transparent 5mm);
+  border:1px solid #9ca3af;">
+  <div style="position:absolute;inset:0;background:
+    repeating-linear-gradient(0deg, transparent, transparent calc(10mm - 1px), #9ca3af calc(10mm - 1px), #9ca3af 10mm),
+    repeating-linear-gradient(90deg, transparent, transparent calc(10mm - 1px), #9ca3af calc(10mm - 1px), #9ca3af 10mm); mix-blend-mode: multiply;"></div>
+  <div style="position:absolute;top:2mm;left:2mm;font:12px/1 Arial;color:#111;background:#fff8;padding:.5mm 1mm;border:1px solid #eee;">
+    网格校准：${mmW} × ${mmH} mm（粗线 = 10mm，细线 = 5mm）
+  </div>
+</div>`;
+    }
+
+    function buildTestPageHtml(){
+      const {width, height} = getPageSize();
+      const mmW = (width/1000).toFixed(1), mmH = (height/1000).toFixed(1);
+      return `
+<div style="width:${mmW}mm;height:${mmH}mm;box-sizing:border-box;padding:6mm;font-family:Arial,Helvetica,sans-serif;">
+  <h2 style="margin:0 0 3mm 0;">打印测试页</h2>
+  <div style="font-size:14px">纸张：${mmW} × ${mmH} mm</div>
+  <div style="margin:4mm 0;border-top:1px dashed #9ca3af"></div>
+  <div style="display:flex;gap:4mm;align-items:center;">
+    <div style="width:40mm;height:20mm;border:1px solid #111;display:flex;align-items:center;justify-content:center;">文本 12px</div>
+    <div style="width:40mm;height:20mm;border:1px solid #111;display:flex;align-items:center;justify-content:center;font-size:10px;">文本 10px</div>
+    <div style="width:40mm;height:20mm;border:1px solid #111;display:flex;align-items:center;justify-content:center;font-size:8px;">文本 8px</div>
+  </div>
+  <div style="margin-top:6mm;">
+    <div style="height:1mm;background:#111"></div>
+    <div style="height:0.5mm;background:#111;margin-top:1mm"></div>
+    <div style="height:0.25mm;background:#111;margin-top:1mm"></div>
+  </div>
+  <div style="position:absolute;right:6mm;bottom:6mm;font-size:10px;color:#888;">生成时间：${new Date().toLocaleString()}</div>
+</div>`;
+    }
+
+    document.getElementById('printGridBtn').addEventListener('click', ()=>{
+      const pageSize = getPageSize(); const templateId = 'grid-'+Date.now(); const printer = printerSel.value;
+      socket.emit('news', { type:'html', html: buildGridHtml(), pageSize, printer, templateId });
+      logLine('发送任务(grid)'); showToast('已发送网格页');
+    });
+    document.getElementById('printTestPageBtn').addEventListener('click', ()=>{
+      const pageSize = getPageSize(); const templateId = 'test-'+Date.now(); const printer = printerSel.value;
+      socket.emit('news', { type:'html', html: buildTestPageHtml(), pageSize, printer, templateId });
+      logLine('发送任务(test)'); showToast('已发送测试页');
+    });
+
+    // ====== 批量打印（HTML） ======
+    const batchArea = document.getElementById('batchJson');
+    const batchBtn = document.getElementById('batchPrintBtn');
+    const batchStatus = document.getElementById('batchStatus');
+    async function batchPrint(){
+      const tpl = (htmlSource.value || store.get().tpl || defaultHtml);
+      const lines = (batchArea.value||'').split(/\n+/).map(s=>s.trim()).filter(Boolean);
+      if(!lines.length){ showToast('请粘贴 JSON 行','err'); return; }
+      const pageSize = getPageSize(); const printer = printerSel.value;
+      let ok=0, fail=0;
+      for(let i=0;i<lines.length;i++){
+        let data = null; try{ data = JSON.parse(lines[i]); }catch(e){ fail++; logLine('❌ 第'+(i+1)+'行 JSON 解析失败'); continue; }
+        const html = renderTemplate(tpl, data);
+        const templateId = 'batch-'+Date.now()+'-'+i;
+        socket.emit('news', { type:'html', html, pageSize, printer, templateId });
+        logLine('发送任务(batch '+(i+1)+'/'+lines.length+')');
+        await new Promise(r=> setTimeout(r, 120)); // 略微节流，避免一次性太多
+        ok++;
+        batchStatus.textContent = `已发送 ${ok}/${lines.length}`;
+      }
+      showToast('批量任务已全部发送');
+    }
+    batchBtn.addEventListener('click', batchPrint);
+
+    // ====== 日志清空 ======
+    document.getElementById('clearLog').addEventListener('click', ()=>{ logBox.textContent=''; });
+
+    // ====== 帮助弹窗 ======
+    const helpModal = document.getElementById('helpModal');
+    document.getElementById('helpBtn').addEventListener('click', ()=> helpModal.classList.remove('hidden'));
+    document.getElementById('closeHelp').addEventListener('click', ()=> helpModal.classList.add('hidden'));
+
+    // ====== 偏好保存/恢复 ======
+    function persistPrefs(){ const prefs = store.get(); store.set({ ...prefs, token: tokenInput.value||'', printer: printerSel.value||'', w: wMm.value, h: hMm.value, ori: orientation.value, tpl: htmlSource.value||prefs.tpl||defaultHtml, pdf: pdfUrl.value||'' }); }
+    function restorePrefs(){ const p = store.get(); if(!p) return; if(p.token) tokenInput.value = p.token; if(p.printer){ [...printerSel.options].forEach(o=> o.value===p.printer && (o.selected=true)); }
+      if(p.w) wMm.value = p.w; if(p.h) hMm.value = p.h; if(p.ori) orientation.value = p.ori; if(p.tpl) htmlSource.value = p.tpl; if(p.pdf) pdfUrl.value = p.pdf; }
+
+    // ====== 初始化 ======
+    restorePrefs();
+    connectSocket();
+  </script>
+</body>
+</html>
