@@ -4,7 +4,7 @@
  * @Github: https://github.com/CcSimple
  * @Date: 2023-04-21 16:35:07
  * @LastEditors: CcSimple
- * @LastEditTime: 2025-08-20 12:00:00
+ * @LastEditTime: 2025-08-20 14:00:00
  */
 const pdfPrint1 = require("pdf-to-printer");
 const pdfPrint2 = require("unix-print");
@@ -27,9 +27,7 @@ const randomStr = () => {
 // ★ 新增：Windows 下兜底用 Adobe Reader 静默打印
 function tryAdobeFallback(pdfPath, printer) {
   return new Promise((resolve, reject) => {
-    // 允许从设置里覆盖路径
     const configured = store.get("adobePath");
-    // 常见安装路径（优先 64-bit，再 32-bit）
     const candidates = configured
       ? [configured]
       : [
@@ -70,9 +68,6 @@ const realPrint = (pdfPath, printer, data, resolve, reject) => {
     data = Object.assign({}, data);
     data.printer = printer;
     log("print pdf:" + pdfPath + JSON.stringify(data));
-    // 参数见 node_modules/pdf-to-printer/dist/print/print.d.ts
-    // pdf打印文档：https://www.sumatrapdfreader.org/docs/Command-line-arguments
-    // pdf-to-printer 源码: https://github.com/artiebits/pdf-to-printer
     let pdfOptions = Object.assign(data, { paperSize: data.paperName });
     printPdfFunction(pdfPath, pdfOptions)
       .then(() => {
@@ -88,15 +83,10 @@ const realPrint = (pdfPath, printer, data, resolve, reject) => {
         }
       });
   } else {
-    // 参数见 lp 命令 使用方法
     let options = [];
     printPdfFunction(pdfPath, printer, options)
-      .then(() => {
-        resolve();
-      })
-      .catch((e) => {
-        reject(e);
-      });
+      .then(() => resolve())
+      .catch((e) => reject(e));
   }
 };
 
@@ -115,7 +105,6 @@ const printPdf = (pdfPath, printer, data) => {
               "url_pdf",
               dayjs().format(`YYYY_MM_DD HH_mm_ss_`) + `${uuidv7()}.pdf`,
             );
-            // 确保目录存在
             fs.mkdirSync(path.dirname(toSavePath), { recursive: true });
             const file = fs.createWriteStream(toSavePath);
             res.pipe(file);
@@ -141,23 +130,16 @@ const printPdf = (pdfPath, printer, data) => {
 
 /**
  * @description: 打印Blob类型的PDF数据
- * @param {Blob|Uint8Array|Buffer} pdfBlob PDF的二进制数据
- * @param {string} printer 打印机名称
- * @param {object} data 打印参数
- * @return {Promise}
  */
 const printPdfBlob = (pdfBlob, printer, data) => {
   return new Promise((resolve, reject) => {
     try {
-      // 验证blob数据 实际是 Uint8Array（Node18+ 也有 Blob）
-      if (
-        !pdfBlob ||
-        !(
-          (typeof Blob !== "undefined" && pdfBlob instanceof Blob) ||
-          pdfBlob instanceof Uint8Array ||
-          Buffer.isBuffer(pdfBlob)
-        )
-      ) {
+      // 校验
+      const isValid =
+        (typeof Blob !== "undefined" && pdfBlob instanceof Blob) ||
+        pdfBlob instanceof Uint8Array ||
+        Buffer.isBuffer(pdfBlob);
+      if (!isValid) {
         reject(new Error("pdfBlob must be a Blob, Uint8Array, or Buffer"));
         return;
       }
@@ -168,17 +150,17 @@ const printPdfBlob = (pdfBlob, printer, data) => {
         "blob_pdf",
         dayjs().format(`YYYY_MM_DD HH_mm_ss_`) + `${uuidv7()}.pdf`,
       );
-
-      // 确保目录存在
       fs.mkdirSync(path.dirname(toSavePath), { recursive: true });
 
-      // Uint8Array / Blob → Buffer
-      const toBuffer = (blobOrU8) =>
-        Buffer.isBuffer(blobOrU8)
-          ? blobOrU8
-          : typeof Blob !== "undefined" && blobOrU8 instanceof Blob
-          ? Buffer.from(new Uint8Array(blobOrU8.buffer || await blobOrU8.arrayBuffer()))
-          : Buffer.from(blobOrU8);
+      // 转 Buffer
+      const toBuffer = async (blobOrU8) => {
+        if (Buffer.isBuffer(blobOrU8)) return blobOrU8;
+        if (typeof Blob !== "undefined" && blobOrU8 instanceof Blob) {
+          const ab = await blobOrU8.arrayBuffer();
+          return Buffer.from(new Uint8Array(ab));
+        }
+        return Buffer.from(blobOrU8);
+      };
 
       Promise.resolve(toBuffer(pdfBlob))
         .then((buffer) => {
@@ -192,9 +174,7 @@ const printPdfBlob = (pdfBlob, printer, data) => {
             realPrint(toSavePath, printer, data, resolve, reject);
           });
         })
-        .catch((err) => {
-          reject(err);
-        });
+        .catch((err) => reject(err));
     } catch (error) {
       log("print blob error:" + error?.message);
       reject(error);
