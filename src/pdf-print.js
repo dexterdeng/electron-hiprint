@@ -35,7 +35,7 @@ function tryAdobe(pdfPath, printer) {
       ? [configured]
       : [
           // Acrobat（完整版）
-          "C:\\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe',
+          "C:\\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
           // Acrobat（完整版）
           "C:\\Program Files\\Adobe\\Acrobat\\Acrobat\\Acrobat.exe",
           // Reader 64-bit
