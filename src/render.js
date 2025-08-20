@@ -3,6 +3,7 @@
 const fs = require("fs");
 const { app, BrowserWindow, ipcMain, dialog, screen } = require("electron");
 const path = require("path");
+const { pathToFileURL } = require("url"); // ★ 新增
 const { Jimp } = require("jimp");
 const dayjs = require("dayjs");
 
@@ -84,9 +85,11 @@ async function createRenderWindow() {
   // 创建打印窗口
   RENDER_WINDOW = new BrowserWindow(windowOptions);
 
-  // 加载打印渲染进程页面
-  let printHtml = path.join("file://", app.getAppPath(), "/assets/render.html");
-  RENDER_WINDOW.webContents.loadURL(printHtml);
+  // 加载打印渲染进程页面（★ 修复 file:// 路径）
+  const renderHtml = pathToFileURL(
+    path.join(app.getAppPath(), "assets", "render.html"),
+  ).toString();
+  RENDER_WINDOW.webContents.loadURL(renderHtml);
 
   RENDER_WINDOW.on("ready-to-show", () => {
     const windowBounds = RENDER_WINDOW.getBounds();
@@ -485,3 +488,4 @@ module.exports = async () => {
   // 创建渲染窗口
   await createRenderWindow();
 };
+

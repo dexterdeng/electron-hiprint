@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
+const { pathToFileURL } = require("url"); // ★ 新增：规范化 file://
 const { printPdf, printPdfBlob } = require("./pdf-print");
 const log = require("../tools/log");
 const { store, getCurrentPrintStatusByName } = require("../tools/utils");
@@ -32,8 +33,10 @@ async function createPrintWindow() {
   // 创建打印窗口
   PRINT_WINDOW = new BrowserWindow(windowOptions);
 
-  // 加载打印渲染进程页面
-  let printHtml = path.join("file://", app.getAppPath(), "/assets/print.html");
+  // 加载打印渲染进程页面（★ 修复 file:// 路径）
+  const printHtml = pathToFileURL(
+    path.join(app.getAppPath(), "assets", "print.html"),
+  ).toString();
   PRINT_WINDOW.webContents.loadURL(printHtml);
 
   // 未打包时打开开发者工具
@@ -133,7 +136,7 @@ function initPrintEvent() {
       );
     };
 
-    // pdf 打印
+    // pdf 打印（把 HTML 渲染为 PDF 再打印）
     let isPdf = data.type && `${data.type}`.toLowerCase() === "pdf";
     if (isPdf) {
       const pdfPath = path.join(
@@ -209,10 +212,12 @@ function initPrintEvent() {
         });
       return;
     }
-    // url_pdf 打印
+
+    // url_pdf 打印（★ 兼容 pdf_path 与 pdf_url）
     const isUrlPdf = data.type && `${data.type}`.toLowerCase() === "url_pdf";
     if (isUrlPdf) {
-      printPdf(data.pdf_path, deviceName, data)
+      const urlOrPath = data.pdf_path || data.pdf_url; // ★ 新增
+      printPdf(urlOrPath, deviceName, data)
         .then(() => {
           log(
             `${data.replyId ? "中转服务" : "插件端"} ${socket.id} 模板 【${
@@ -274,11 +279,11 @@ function initPrintEvent() {
           }】 打印失败，原因：${errorMsg}`,
         );
         socket &&
-        socket.emit("error", {
-          msg: errorMsg,
-          templateId: data.templateId,
-          replyId: data.replyId,
-        });
+          socket.emit("error", {
+            msg: errorMsg,
+            templateId: data.templateId,
+            replyId: data.replyId,
+          });
         logPrintResult("failed", errorMsg);
         if (data.taskId) {
           PRINT_RUNNER_DONE[data.taskId]();
@@ -320,11 +325,11 @@ function initPrintEvent() {
             }`,
           );
           socket &&
-          socket.emit("error", {
-            msg: "打印失败: " + err.message,
-            templateId: data.templateId,
-            replyId: data.replyId,
-          });
+            socket.emit("error", {
+              msg: "打印失败: " + err.message,
+              templateId: data.templateId,
+              replyId: data.replyId,
+            });
           logPrintResult("failed", err.message);
         })
         .finally(() => {
@@ -338,6 +343,7 @@ function initPrintEvent() {
         });
       return;
     }
+
     // 打印 详见https://www.electronjs.org/zh/docs/latest/api/web-contents
     PRINT_WINDOW.webContents.print(
       {
@@ -435,3 +441,4 @@ module.exports = async () => {
   // 创建打印窗口
   await createPrintWindow();
 };
+
